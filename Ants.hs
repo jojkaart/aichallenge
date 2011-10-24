@@ -27,6 +27,8 @@ import Data.Array
 import Data.List (isPrefixOf)
 import Data.Char (digitToInt, toUpper)
 import Data.Maybe (fromJust)
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Control.Applicative
 import Data.Time.Clock
 import System.IO
@@ -37,6 +39,7 @@ type Col = Int
 type Visible = Bool
 type Point = (Row, Col)
 type Food = Point
+type Hill = Ant
 type World = Array Point MetaTile
 
 colBound :: World -> Col
@@ -80,12 +83,12 @@ data MetaTile = MetaTile
   , visible :: Visible
   } deriving (Show)
 
-data Owner = Me | Enemy1 | Enemy2 | Enemy3 deriving (Show,Eq,Bounded,Enum)
+data Owner = Me | Enemy1 | Enemy2 | Enemy3 deriving (Show,Eq,Bounded,Enum,Ord)
 
 data Ant = Ant
   { point :: Point
   , owner :: Owner
-  } deriving (Show)
+  } deriving (Show,Eq,Ord)
 
 data Direction = North | East | South | West deriving (Bounded, Eq, Enum)
 
@@ -105,6 +108,7 @@ data GameState = GameState
   { world :: World
   , ants :: [Ant]
   , food :: [Food] -- call "food GameState" to return food list
+  , hills :: Set Hill
   , startTime :: UTCTime
   }
 
@@ -236,7 +240,7 @@ addFood :: GameState -> Point -> GameState
 addFood gs loc = 
   let newFood = loc:food gs
       newWorld = world gs // [(loc, MetaTile {tile = FoodTile, visible = True})]
-  in GameState {world = newWorld, ants = ants gs, food = newFood, startTime = startTime gs}
+  in gs {world = newWorld, food = newFood}
 
 sumPoint :: Point -> Point -> Point
 sumPoint x y = (row x + row y, col x + col y)
@@ -258,7 +262,12 @@ addAnt gp gs p own =
                     then addVisible (world gs) (viewPoints gp) p
                     else world gs
       newWorld  = newWorld' // [(p, MetaTile {tile = ownerToTile own, visible = True})]
-  in GameState {world = newWorld, ants = newAnts, food = food gs, startTime = startTime gs}
+  in gs {world = newWorld, ants = newAnts}
+
+addHill :: GameParams -> GameState -> Point -> Owner -> GameState
+addHill gp gs p own = 
+  let newHill   = Ant {point = p, owner = own}
+  in gs {hills = Set.insert newHill (hills gs)}
 
 addDead :: GameParams -> GameState -> Point -> Owner -> GameState
 addDead gp gs p own =
@@ -266,24 +275,25 @@ addDead gp gs p own =
                     then addVisible (world gs) (viewPoints gp) p
                     else world gs
       newWorld = newWorld' // [(p, MetaTile {tile = Dead, visible = True})]
-  in GameState {world = newWorld, ants = ants gs, food = food gs, startTime = startTime gs}
+  in gs {world = newWorld}
 
 -- if replacing a visible tile it should be kept visible
 addWorldTile :: GameState -> Tile -> Point -> GameState
 addWorldTile gs t p =
   let newWorld = world gs // [(p, MetaTile {tile = t, visible = True})]
-  in GameState {world = newWorld, ants = ants gs, food = food gs, startTime = startTime gs}
+  in gs {world = newWorld}
 
 initialGameState :: GameParams -> UTCTime -> GameState
 initialGameState gp time =
   let w = listArray ((0,0), (rows gp - 1, cols gp - 1)) (repeat MetaTile {tile = Unknown, visible = False})
-  in GameState {world = w, ants = [], food = [], startTime = time}
+  in GameState {world = w, ants = [], food = [], hills = Set.empty, startTime = time}
 
 updateGameState :: GameParams -> GameState -> String -> GameState
 updateGameState gp gs s
   | "f" `isPrefixOf` s = addFood gs $ toPoint . tail $ s
   | "w" `isPrefixOf` s = addWorldTile gs Water $ toPoint . tail $ s
   | "a" `isPrefixOf` s = addAnt gp gs (toPoint . init . tail $ s) (toOwner . digitToInt . last $ s)
+  | "h" `isPrefixOf` s = addHill gp gs (toPoint . init . tail $ s) (toOwner . digitToInt . last $ s)
   | "d" `isPrefixOf` s = addDead gp gs (toPoint . init . tail $ s) (toOwner . digitToInt . last $ s)
   | otherwise = gs -- ignore line
   where
@@ -301,11 +311,7 @@ updateGame gp gs = do
           updateGame gp gs 
       | "go" `isPrefixOf` line   = do
           currentTime <- getCurrentTime
-          return GameState {world = world gs
-                           , ants = ants gs
-                           , food = food gs
-                           , startTime = currentTime
-                           }
+          return gs { startTime = currentTime }
       | otherwise = updateGame gp $ updateGameState gp gs line
 
 -- Sets the tile to visible
@@ -331,7 +337,7 @@ clearMetaTile m
 -- Clears ants and food and sets tiles to invisible
 cleanState :: GameState -> GameState
 cleanState gs = 
-  GameState {world = nw, ants = [], food = [], startTime = startTime gs}
+  gs {world = nw, ants = [], food = []}
   where 
     w = world gs
     invisibles = map clearMetaTile $ elems w
